@@ -1,3 +1,20 @@
+ADMIN_GROUPS_FILE = "admin_groups.json"
+
+def _load_admin_groups() -> dict:
+    if not os.path.exists(ADMIN_GROUPS_FILE):
+        return {}
+    try:
+        with open(ADMIN_GROUPS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {}
+
+def _save_admin_group(user_id: int, group_id: int):
+    groups = _load_admin_groups()
+    groups[str(user_id)] = group_id
+    with open(ADMIN_GROUPS_FILE, "w", encoding="utf-8") as f:
+        json.dump(groups, f)
+# Move async def set_announce_interval below imports
 # giveaway_bot.py
 import asyncio, json, os, random
 from typing import Dict, Any, List
@@ -6,8 +23,39 @@ from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, MessageHandler,
     ConversationHandler, filters, ContextTypes
 )
+async def set_announce_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    # Only allow in private chat
+    if update.effective_chat.type != "private":
+        return await update.message.reply_text("Please use this command in a private chat with the bot.")
+    if not await is_admin(user.id, update, context):
+        return await update.message.reply_text("Unauthorized.")
+    args = context.args
+    if not args or not args[0].isdigit():
+        return await update.message.reply_text("Usage: /gset_announce_interval <minutes>")
+    minutes = int(args[0])
+    if minutes < 1:
+        return await update.message.reply_text("Interval must be at least 1 minute.")
+    _save_announce_interval(minutes)
+    await update.message.reply_text(f"Announcement interval set to {minutes} minutes.")
+ANNOUNCE_INTERVAL_FILE = "announce_interval.json"
 
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "PUT_YOUR_TOKEN_HERE")
+def _load_announce_interval() -> int:
+    if not os.path.exists(ANNOUNCE_INTERVAL_FILE):
+        return 10  # default 10 minutes
+    try:
+        with open(ANNOUNCE_INTERVAL_FILE, "r", encoding="utf-8") as f:
+            return int(json.load(f).get("interval", 10))
+    except:
+        return 10
+
+def _save_announce_interval(interval: int) -> None:
+    with open(ANNOUNCE_INTERVAL_FILE, "w", encoding="utf-8") as f:
+        json.dump({"interval": interval}, f)
+
+
+
+TOKEN = "PUT_YOUR_TOKEN_HERE"
 
 ADMIN_IDS = {int(x.strip()) for x in os.getenv("ADMIN_IDS", "0").split(",") if x.strip().isdigit()}
 STATE_FILE = "giveaway.json"
@@ -35,42 +83,75 @@ def _save(state: Dict[str, Any]) -> None:
         json.dump(state, f, ensure_ascii=False, indent=2)
     os.replace(tmp, STATE_FILE)
 
-def is_admin(user_id: int) -> bool:
+from telegram.constants import ChatMemberStatus
+
+async def is_admin(user_id: int, update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    chat = update.effective_chat
+    if chat and chat.type in ["group", "supergroup"]:
+        try:
+            admins = await context.bot.get_chat_administrators(chat.id)
+            for member in admins:
+                if member.user.id == user_id:
+                    if member.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+                        return True
+            return False
+        except Exception as e:
+            print(f"[WARN] Could not fetch chat admins: {e}")
+            return user_id in ADMIN_IDS
+    # Private chat: check if user is mapped to a group
+    groups = _load_admin_groups()
+    if str(user_id) in groups:
+        return True
     return user_id in ADMIN_IDS
 
 def admin_keyboard(state: Dict[str, Any]) -> InlineKeyboardMarkup:
     active = state["active"]
-    buttons = [
-        [InlineKeyboardButton("Start Giveaway ✅", callback_data="admin:start")],
-        [InlineKeyboardButton("End Giveaway ⛔", callback_data="admin:end")],
-        [InlineKeyboardButton("Pick Random 🎲", callback_data="admin:pick_random")],
-        [InlineKeyboardButton("Pick Specific 🎯", callback_data="admin:pick_specific")],
-        [InlineKeyboardButton("Show Entries 📋", callback_data="admin:show_entries")],
-        [InlineKeyboardButton("Show Winners 🏆", callback_data="admin:show_winners")],
-    ]
-    # Subtle UX hint by enabling/disabling visually through label; functional gating happens server-side
-    if active:
-        buttons[0][0].text = "Start Giveaway ✅ (Active)"
+    buttons = []
+    if not active:
+        buttons.append([InlineKeyboardButton("Start Giveaway ✅", callback_data="admin:start")])
     else:
-        buttons[1][0].text = "End Giveaway ⛔ (Inactive)"
+        buttons.append([InlineKeyboardButton("End Giveaway ⛔", callback_data="admin:end")])
+    buttons.append([InlineKeyboardButton("Pick Random 🎲", callback_data="admin:pick_random")])
+    buttons.append([InlineKeyboardButton("Show Entries 📋", callback_data="admin:show_entries")])
+    buttons.append([InlineKeyboardButton("Show Winners 🏆", callback_data="admin:show_winners")])
+    buttons.append([InlineKeyboardButton("Clear Winners 🧹", callback_data="admin:clear_winners")])
+    buttons.append([InlineKeyboardButton("Set Announcement Interval ⏰", callback_data="admin:set_announce_interval")])
     return InlineKeyboardMarkup(buttons)
 
-def user_keyboard(state: Dict[str, Any]) -> InlineKeyboardMarkup:
+async def user_keyboard(state: Dict[str, Any], update: Update, context: ContextTypes.DEFAULT_TYPE) -> InlineKeyboardMarkup:
+    buttons = []
     if state["active"]:
-        return InlineKeyboardMarkup([[InlineKeyboardButton("🎁 Click to Enter Giveaway", callback_data="user:enter")]])
-    return InlineKeyboardMarkup([[InlineKeyboardButton("⏸️ Giveaway not active", callback_data="noop")]])
+        buttons.append([InlineKeyboardButton("🎁 Click to Enter Giveaway", callback_data="user:enter")])
+        buttons.append([InlineKeyboardButton("❓ Help", callback_data="user:help")])
+        user = update.effective_user
+        if await is_admin(user.id, update, context):
+            buttons.append([InlineKeyboardButton("🛠 Admin Panel", callback_data="user:admin")])
+    else:
+        buttons.append([InlineKeyboardButton("⏸️ Giveaway not active", callback_data="noop")])
+    return InlineKeyboardMarkup(buttons)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     async with LOCK:
         s = _load()
     text = "Welcome! Tap below to enter the current giveaway." if s["active"] else "No active giveaway right now."
-    kb = user_keyboard(s)
+    kb = await user_keyboard(s, update, context)
     await update.message.reply_text(text, reply_markup=kb)
 
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if not is_admin(user.id):
+    chat = update.effective_chat
+    if chat and chat.type in ["group", "supergroup"]:
+        # Link admin to group
+        groups = _load_admin_groups()
+        already_admin = str(user.id) in groups and groups[str(user.id)] == chat.id
+        if not already_admin:
+            _save_admin_group(user.id, chat.id)
+            return await update.message.reply_text("You’ve been added as a giveaway admin for this group!")
+        else:
+            return await update.message.reply_text("You’re already a giveaway admin for this group!")
+    # Private chat: show admin panel
+    if not await is_admin(user.id, update, context):
         return await update.message.reply_text("Unauthorized.")
     async with LOCK:
         s = _load()
@@ -83,6 +164,17 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     if data == "noop":
+        return
+
+    if data == "user:help":
+        help_text = "Help: To become an admin, use /giveaway or /gstart in your group chat as a group admin. Then DM this bot to access admin features."
+        await query.edit_message_text(help_text)
+        return
+
+    if data == "user:admin":
+        async with LOCK:
+            s = _load()
+        await query.edit_message_text("Admin Panel", reply_markup=admin_keyboard(s))
         return
 
     if data.startswith("user:"):
@@ -98,11 +190,12 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             s["entries"].append(entry)
             _save(s)
             number = len(s["entries"])
+            print(f"[INFO] User entered giveaway: id={uid}, username={user.username}, entry number={number}")
         await query.edit_message_text(f"You're in! Your entry number is #{number}. Good luck! 🎉")
         return
 
     if data.startswith("admin:"):
-        if not is_admin(user.id):
+        if not await is_admin(user.id, update, context):
             return await query.edit_message_text("Unauthorized.")
         cmd = data.split(":",1)[1]
         async with LOCK:
@@ -111,10 +204,25 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 s["active"] = True
                 s["entries"] = []
                 _save(s)
+                print("[INFO] Giveaway started. Entries cleared.")
+                # If in private chat, announce to associated group
+                if update.effective_chat.type == "private":
+                    groups = _load_admin_groups()
+                    group_id = groups.get(str(user.id))
+                    if group_id:
+                        bot_username = (await context.bot.get_me()).username
+                        await context.bot.send_message(
+                            chat_id=group_id,
+                            text="A giveaway has started! Use /start in private chat with the bot to enter.",
+                            reply_markup=InlineKeyboardMarkup([
+                                [InlineKeyboardButton("DM the Bot", url=f"https://t.me/{bot_username}")]
+                            ])
+                        )
                 return await query.edit_message_text("Giveaway started. Entries cleared.", reply_markup=admin_keyboard(s))
             if cmd == "end":
                 s["active"] = False
                 _save(s)
+                print("[INFO] Giveaway ended.")
                 return await query.edit_message_text("Giveaway ended.", reply_markup=admin_keyboard(s))
             if cmd == "pick_random":
                 if not s["entries"]:
@@ -124,55 +232,34 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 s["winners"].append(winner)
                 _save(s)
                 ulabel = winner.get("username") and f"@{winner['username']}" or f"{winner.get('first_name','')} {winner.get('last_name','')}".strip()
+                print(f"[INFO] Random winner picked: {ulabel} (id {winner['user_id']})")
+                # Send winner announcement to group if in private chat
+                if update.effective_chat.type == "private":
+                    groups = _load_admin_groups()
+                    group_id = groups.get(str(user.id))
+                    if group_id:
+                        bot_username = (await context.bot.get_me()).username
+                        await context.bot.send_message(
+                            chat_id=group_id,
+                            text=f"🎉 Giveaway Winner: {ulabel} (id {winner['user_id']})",
+                            reply_markup=InlineKeyboardMarkup([
+                                [InlineKeyboardButton("DM the Bot", url=f"https://t.me/{bot_username}")]
+                            ])
+                        )
                 return await query.edit_message_text(f"Winner: {ulabel} (id {winner['user_id']}) 🏆\nRemoved from current pool.", reply_markup=admin_keyboard(s))
-            if cmd == "pick_specific":
+            # Pick Specific removed
+            if cmd == "clear_winners":
+                s["winners"] = []
                 _save(s)
-        await query.edit_message_text("Reply with a user ID to pick (or @username).", reply_markup=None)
-        context.user_data["awaiting_specific"] = True
-        return
+                print("[INFO] Winners list cleared.")
+                return await query.edit_message_text("Winners list cleared.", reply_markup=admin_keyboard(s))
     # Fallback
     await query.edit_message_text("Unknown action.")
 
-async def pick_specific_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        return
-    if not context.user_data.get("awaiting_specific"):
-        return
-    text = (update.message.text or "").strip()
-    target_id = None
-    by_username = None
-    if text.startswith("@"):
-        by_username = text[1:].lower()
-    else:
-        if text.isdigit():
-            target_id = int(text)
-
-    async with LOCK:
-        s = _load()
-        if by_username:
-            cand = [e for e in s["entries"] if (e.get("username") or "").lower() == by_username]
-            if not cand:
-                await update.message.reply_text(f"No entry for @{by_username}.")
-                context.user_data["awaiting_specific"] = False
-                return
-            winner = cand[0]
-        else:
-            cand = [e for e in s["entries"] if e["user_id"] == target_id]
-            if not cand:
-                await update.message.reply_text(f"No entry for id {target_id}.")
-                context.user_data["awaiting_specific"] = False
-                return
-            winner = cand[0]
-        s["entries"] = [e for e in s["entries"] if e["user_id"] != winner["user_id"]]
-        s["winners"].append(winner)
-        _save(s)
-
-    ulabel = winner.get("username") and f"@{winner['username']}" or f"{winner.get('first_name','')} {winner.get('last_name','')}".strip()
-    await update.message.reply_text(f"Winner: {ulabel} (id {winner['user_id']}) 🏆\nRemoved from current pool.")
-    context.user_data["awaiting_specific"] = False
+    # Pick Specific feature removed
 
 async def show_entries(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
+    if not await is_admin(update.effective_user.id, update, context):
         return await update.message.reply_text("Unauthorized.")
     async with LOCK:
         s = _load()
@@ -186,7 +273,7 @@ async def show_entries(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Entries:\n" + "\n".join(lines))
 
 async def show_winners(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
+    if not await is_admin(update.effective_user.id, update, context):
         return await update.message.reply_text("Unauthorized.")
     async with LOCK:
         s = _load()
@@ -201,25 +288,68 @@ async def show_winners(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def admin_panel_shortcuts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Optional text commands for admins
-    if not is_admin(update.effective_user.id):
+    if not await is_admin(update.effective_user.id, update, context):
         return await update.message.reply_text("Unauthorized.")
     cmd = (update.message.text or "").strip().lower()
-    if cmd == "/admin":
-        async with LOCK:
-            s = _load()
-        return await update.message.reply_text("Admin Panel", reply_markup=admin_keyboard(s))
-    if cmd == "/show_entries":
+    if cmd == "/gshow_entries":
         return await show_entries(update, context)
-    if cmd == "/show_winners":
+    if cmd == "/gshow_winners":
         return await show_winners(update, context)
 
 def main():
     app = Application.builder().token(TOKEN).build()
+    async def group_giveaway_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        chat = update.effective_chat
+        user = update.effective_user
+        if chat and chat.type in ["group", "supergroup"]:
+            # Add to admin list if user is admin
+            if await is_admin(user.id, update, context):
+                groups = _load_admin_groups()
+                already_admin = str(user.id) in groups and groups[str(user.id)] == chat.id
+                if not already_admin:
+                    _save_admin_group(user.id, chat.id)
+            bot_username = (await context.bot.get_me()).username
+            await update.message.reply_text(
+                "To enter the giveaway, DM this bot and use /start.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("DM the Bot", url=f"https://t.me/{bot_username}")]
+                ])
+            )
+        else:
+            await start(update, context)
+    app.add_handler(CommandHandler("gstart", group_giveaway_entry))
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("admin", admin))
+    app.add_handler(CommandHandler("giveaway", group_giveaway_entry))
+    app.add_handler(CommandHandler("gset_announce_interval", set_announce_interval))
     app.add_handler(CallbackQueryHandler(handle_button))
     app.add_handler(MessageHandler(filters.TEXT & filters.User(ADMIN_IDS), admin_panel_shortcuts))
-    app.add_handler(MessageHandler(filters.TEXT & filters.User(ADMIN_IDS), pick_specific_text))
+
+    # Regular announcements
+    async def announce_giveaway_periodically(app):
+        while True:
+            await asyncio.sleep(_load_announce_interval() * 60)
+            s = _load()
+            if s["active"]:
+                groups = _load_admin_groups()
+                for group_id in set(groups.values()):
+                    bot_username = (await app.bot.get_me()).username
+                    await app.bot.send_message(
+                        chat_id=group_id,
+                        text="A giveaway is active! DM this bot and use /start to enter.",
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("DM the Bot", url=f"https://t.me/{bot_username}")]
+                        ])
+                    )
+
+    async def run_announcer():
+        await announce_giveaway_periodically(app)
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    loop.create_task(run_announcer())
     app.run_polling(close_loop=False)
 
 if __name__ == "__main__":
