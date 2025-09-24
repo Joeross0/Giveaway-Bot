@@ -114,7 +114,7 @@ def admin_keyboard(state: Dict[str, Any]) -> InlineKeyboardMarkup:
     buttons.append([InlineKeyboardButton("Pick Random 🎲", callback_data="admin:pick_random")])
     buttons.append([InlineKeyboardButton("Show Entries 📋", callback_data="admin:show_entries")])
     buttons.append([InlineKeyboardButton("Show Winners 🏆", callback_data="admin:show_winners")])
-    buttons.append([InlineKeyboardButton("Clear Winners 🧹", callback_data="admin:clear_winners")])
+    #buttons.append([InlineKeyboardButton("Clear Winners 🧹", callback_data="admin:clear_winners")])
     buttons.append([InlineKeyboardButton("Set Announcement Interval ⏰", callback_data="admin:set_announce_interval")])
     return InlineKeyboardMarkup(buttons)
 
@@ -200,11 +200,16 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cmd = data.split(":",1)[1]
         async with LOCK:
             s = _load()
+            if cmd == "show_entries":
+                return await show_entries(update, context)
+            if cmd == "show_winners":
+                return await show_winners(update, context)
             if cmd == "start":
                 s["active"] = True
                 s["entries"] = []
+                s["winners"] = []
                 _save(s)
-                print("[INFO] Giveaway started. Entries cleared.")
+                print("[INFO] Giveaway started. Entries and winners cleared.")
                 # If in private chat, announce to associated group
                 if update.effective_chat.type == "private":
                     groups = _load_admin_groups()
@@ -259,32 +264,87 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Pick Specific feature removed
 
 async def show_entries(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update.effective_user.id, update, context):
-        return await update.message.reply_text("Unauthorized.")
-    async with LOCK:
+    
+    query = getattr(update, "callback_query", None)
+    try:
+        print("[DEBUG] show_entries: is_admin check")
+        if not await is_admin(update.effective_user.id, update, context):
+            print("[DEBUG] show_entries: not admin")
+            if query:
+                return await query.edit_message_text("Unauthorized.")
+            return await update.message.reply_text("Unauthorized.")
+        print("[DEBUG] show_entries: acquiring lock...")
+        print("[DEBUG] show_entries: lock acquired")
         s = _load()
-        entries = s["entries"]
-    if not entries:
-        return await update.message.reply_text("Entries: (none)")
-    lines = []
-    for i, e in enumerate(entries, start=1):
-        tag = f"@{e['username']}" if e.get("username") else f"{e.get('first_name','')} {e.get('last_name','')}".strip()
-        lines.append(f"#{i} - {tag} (id {e['user_id']})")
-    await update.message.reply_text("Entries:\n" + "\n".join(lines))
+        print(f"[DEBUG] show_entries: loaded state: {s}")
+        entries = s.get("entries", None)
+        print(f"[DEBUG] show_entries: entries: {entries}")
+        if not isinstance(entries, list):
+            print(f"[ERROR] show_entries: entries is not a list: {entries}")
+            if query:
+                return await query.edit_message_text("Entries data error.")
+            return await update.message.reply_text("Entries data error.")
+        if not entries:
+            print("[DEBUG] show_entries: no entries")
+            if query:
+                return await query.edit_message_text("Entries: (none)")
+            return await update.message.reply_text("Entries: (none)")
+        print("[DEBUG] show_entries: formatting entries")
+        lines = []
+        for i, e in enumerate(entries, start=1):
+            tag = f"@{e.get('username','')}" if e.get("username") else f"{e.get('first_name','')} {e.get('last_name','')}".strip()
+            lines.append(f"#{i} - {tag} (id {e.get('user_id','?')})")
+        print(f"[DEBUG] show_entries: lines: {lines}")
+        if query:
+            await query.edit_message_text("Entries:\n" + "\n".join(lines))
+        else:
+            await update.message.reply_text("Entries:\n" + "\n".join(lines))
+    except Exception as e:
+        print(f"[ERROR] show_entries failed: {e}")
+        if query:
+            await query.edit_message_text("Error displaying entries.")
+        else:
+            await update.message.reply_text("Error displaying entries.")
 
 async def show_winners(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update.effective_user.id, update, context):
-        return await update.message.reply_text("Unauthorized.")
-    async with LOCK:
+    query = getattr(update, "callback_query", None)
+    try:
+        print("[DEBUG] show_winners: is_admin check")
+        if not await is_admin(update.effective_user.id, update, context):
+            print("[DEBUG] show_winners: not admin")
+            if query:
+                return await query.edit_message_text("Unauthorized.")
+            return await update.message.reply_text("Unauthorized.")
         s = _load()
-        winners = s["winners"]
-    if not winners:
-        return await update.message.reply_text("Winners: (none)")
-    lines = []
-    for i, e in enumerate(winners, start=1):
-        tag = f"@{e['username']}" if e.get("username") else f"{e.get('first_name','')} {e.get('last_name','')}".strip()
-        lines.append(f"{i}. {tag} (id {e['user_id']})")
-    await update.message.reply_text("Winners:\n" + "\n".join(lines))
+        print(f"[DEBUG] show_winners: loaded state: {s}")
+        winners = s.get("winners", None)
+        print(f"[DEBUG] show_winners: winners: {winners}")
+        if not isinstance(winners, list):
+            print(f"[ERROR] show_winners: winners is not a list: {winners}")
+            if query:
+                return await query.edit_message_text("Winners data error.")
+            return await update.message.reply_text("Winners data error.")
+        if not winners:
+            print("[DEBUG] show_winners: no winners")
+            if query:
+                return await query.edit_message_text("Winners: (none)")
+            return await update.message.reply_text("Winners: (none)")
+        print("[DEBUG] show_winners: formatting winners")
+        lines = []
+        for i, e in enumerate(winners, start=1):
+            tag = f"@{e.get('username','')}" if e.get("username") else f"{e.get('first_name','')} {e.get('last_name','')}".strip()
+            lines.append(f"{i}. {tag} (id {e.get('user_id','?')})")
+        print(f"[DEBUG] show_winners: lines: {lines}")
+        if query:
+            await query.edit_message_text("Winners:\n" + "\n".join(lines))
+        else:
+            await update.message.reply_text("Winners:\n" + "\n".join(lines))
+    except Exception as e:
+        print(f"[ERROR] show_winners failed: {e}")
+        if query:
+            await query.edit_message_text("Error displaying winners.")
+        else:
+            await update.message.reply_text("Error displaying winners.")
 
 async def admin_panel_shortcuts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Optional text commands for admins
