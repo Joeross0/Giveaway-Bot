@@ -1,3 +1,25 @@
+# Move async def set_announce_interval below imports
+# giveaway_bot.py
+import asyncio, json, os, random
+from typing import Dict, Any, List
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application, CommandHandler, CallbackQueryHandler, MessageHandler,
+    ConversationHandler, filters, ContextTypes
+)
+
+async def set_announce_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_admin(update.effective_user.id, update, context):
+        return await update.message.reply_text("Unauthorized.")
+    args = context.args
+    if not args or not args[0].isdigit() or len(args) < 2:
+        return await update.message.reply_text("Usage: /gset_announce_settings <minutes> <message>")
+    minutes = int(args[0])
+    if minutes < 1:
+        return await update.message.reply_text("Interval must be at least 1 minute.")
+    message = " ".join(args[1:]).strip()
+    _save_announce_settings(minutes, message)
+    await update.message.reply_text(f"Announcement interval set to {minutes} minutes.\nMessage set to: {message}")
 ADMIN_GROUPS_FILE = "admin_groups.json"
 
 def _load_admin_groups() -> dict:
@@ -14,15 +36,7 @@ def _save_admin_group(user_id: int, group_id: int):
     groups[str(user_id)] = group_id
     with open(ADMIN_GROUPS_FILE, "w", encoding="utf-8") as f:
         json.dump(groups, f)
-# Move async def set_announce_interval below imports
-# giveaway_bot.py
-import asyncio, json, os, random
-from typing import Dict, Any, List
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler, MessageHandler,
-    ConversationHandler, filters, ContextTypes
-)
+
 async def set_announce_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     # Only allow in private chat
@@ -38,20 +52,30 @@ async def set_announce_interval(update: Update, context: ContextTypes.DEFAULT_TY
         return await update.message.reply_text("Interval must be at least 1 minute.")
     _save_announce_interval(minutes)
     await update.message.reply_text(f"Announcement interval set to {minutes} minutes.")
-ANNOUNCE_INTERVAL_FILE = "announce_interval.json"
+ANNOUNCE_SETTINGS_FILE = "announce_settings.json"
 
-def _load_announce_interval() -> int:
-    if not os.path.exists(ANNOUNCE_INTERVAL_FILE):
-        return 10  # default 10 minutes
+
+def _load_announce_settings() -> dict:
+    if not os.path.exists(ANNOUNCE_SETTINGS_FILE):
+        return {"interval": 10, "message": "A giveaway is active! DM this bot and use /start to enter."}
     try:
-        with open(ANNOUNCE_INTERVAL_FILE, "r", encoding="utf-8") as f:
-            return int(json.load(f).get("interval", 10))
+        with open(ANNOUNCE_SETTINGS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return {
+                "interval": int(data.get("interval", 10)),
+                "message": str(data.get("message", "A giveaway is active! DM this bot and use /start to enter."))
+            }
     except:
-        return 10
+        return {"interval": 10, "message": "A giveaway is active! DM this bot and use /start to enter."}
 
-def _save_announce_interval(interval: int) -> None:
-    with open(ANNOUNCE_INTERVAL_FILE, "w", encoding="utf-8") as f:
-        json.dump({"interval": interval}, f)
+def _save_announce_settings(interval: int, message: str) -> None:
+    with open(ANNOUNCE_SETTINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump({"interval": interval, "message": message}, f)
+async def show_announce_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_admin(update.effective_user.id, update, context):
+        return await update.message.reply_text("Unauthorized.")
+    settings = _load_announce_settings()
+    await update.message.reply_text(f"Current announcement interval: {settings['interval']} minutes\nCurrent message: {settings['message']}")
 
 
 
@@ -120,23 +144,22 @@ def admin_keyboard(state: Dict[str, Any]) -> InlineKeyboardMarkup:
 
 async def user_keyboard(state: Dict[str, Any], update: Update, context: ContextTypes.DEFAULT_TYPE) -> InlineKeyboardMarkup:
     buttons = []
-    if state["active"]:
-        buttons.append([InlineKeyboardButton("🎁 Click to Enter Giveaway", callback_data="user:enter")])
-        buttons.append([InlineKeyboardButton("❓ Help", callback_data="user:help")])
-        user = update.effective_user
-        if await is_admin(user.id, update, context):
-            buttons.append([InlineKeyboardButton("🛠 Admin Panel", callback_data="user:admin")])
-    else:
-        buttons.append([InlineKeyboardButton("⏸️ Giveaway not active", callback_data="noop")])
+    buttons.append([InlineKeyboardButton("🎁 Click to Enter Giveaway", callback_data="user:enter")])
+    buttons.append([InlineKeyboardButton("❓ Help", callback_data="user:help")])
+    user = update.effective_user
+    if await is_admin(user.id, update, context):
+        buttons.append([InlineKeyboardButton("🛠 Admin Panel", callback_data="user:admin")])
     return InlineKeyboardMarkup(buttons)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    async with LOCK:
-        s = _load()
-    text = "Welcome! Tap below to enter the current giveaway." if s["active"] else "No active giveaway right now."
-    kb = await user_keyboard(s, update, context)
-    await update.message.reply_text(text, reply_markup=kb)
+    if chat and chat.type not in ["group", "supergroup"]:
+        user = update.effective_user
+        async with LOCK:
+            s = _load()
+        text = "Welcome! Tap below to enter the current giveaway." 
+        kb = await user_keyboard(s, update, context)
+        # Always show keyboard, even if inactive
+        await update.message.reply_text(text, reply_markup=kb)
 
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -162,6 +185,8 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = query.from_user
     data = query.data or ""
     await query.answer()
+
+    print(f"[DEBUG] Button pressed. Callback data: {data}")
 
     if data == "noop":
         return
@@ -198,6 +223,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await is_admin(user.id, update, context):
             return await query.edit_message_text("Unauthorized.")
         cmd = data.split(":",1)[1]
+        print(f"[DEBUG] Admin button command: {cmd}")
         async with LOCK:
             s = _load()
             if cmd == "show_entries":
@@ -252,16 +278,25 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             ])
                         )
                 return await query.edit_message_text(f"Winner: {ulabel} (id {winner['user_id']}) 🏆\nRemoved from current pool.", reply_markup=admin_keyboard(s))
-            # Pick Specific removed
             if cmd == "clear_winners":
                 s["winners"] = []
                 _save(s)
                 print("[INFO] Winners list cleared.")
                 return await query.edit_message_text("Winners list cleared.", reply_markup=admin_keyboard(s))
+            if cmd == "set_announce_interval":
+                print("[DEBUG] Set Announcement Interval button pressed.")
+                # Show instructions to admin in private chat
+                if update.effective_chat.type == "private":
+                    await query.edit_message_text(
+                        "To set the announcement interval, use:\n/gset_announce_settings <minutes> <message>\nExample: /gset_announce_settings 15 Giveaway is live! DM the bot to enter.",
+                        reply_markup=admin_keyboard(s)
+                    )
+                else:
+                    await query.edit_message_text("Please DM the bot to set the announcement interval.", reply_markup=admin_keyboard(s))
+                return
     # Fallback
+    print(f"[DEBUG] Unknown action for callback data: {data}")
     await query.edit_message_text("Unknown action.")
-
-    # Pick Specific feature removed
 
 async def show_entries(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
@@ -358,6 +393,8 @@ async def admin_panel_shortcuts(update: Update, context: ContextTypes.DEFAULT_TY
 
 def main():
     app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("gset_announce_settings", set_announce_settings))
+    app.add_handler(CommandHandler("gshow_announce_settings", show_announce_settings))
     async def group_giveaway_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat = update.effective_chat
         user = update.effective_user
@@ -387,7 +424,10 @@ def main():
     # Regular announcements
     async def announce_giveaway_periodically(app):
         while True:
-            await asyncio.sleep(_load_announce_interval() * 60)
+            settings = _load_announce_settings()
+            interval = settings.get("interval", 10)
+            message = settings.get("message", "A giveaway is active! DM this bot and use /start to enter.")
+            await asyncio.sleep(interval * 60)
             s = _load()
             if s["active"]:
                 groups = _load_admin_groups()
@@ -395,7 +435,7 @@ def main():
                     bot_username = (await app.bot.get_me()).username
                     await app.bot.send_message(
                         chat_id=group_id,
-                        text="A giveaway is active! DM this bot and use /start to enter.",
+                        text=message,
                         reply_markup=InlineKeyboardMarkup([
                             [InlineKeyboardButton("DM the Bot", url=f"https://t.me/{bot_username}")]
                         ])
