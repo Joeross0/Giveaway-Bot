@@ -15,6 +15,7 @@ def _save_custom_buttons(buttons: list) -> None:
 # Move async def set_announce_interval below imports
 # giveaway_bot.py
 import asyncio, json, os, random
+from dotenv import load_dotenv
 from typing import Dict, Any, List
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -100,7 +101,9 @@ async def show_announce_settings(update: Update, context: ContextTypes.DEFAULT_T
 
 
 
-TOKEN = "PUT_YOUR_TOKEN_HERE"
+
+load_dotenv()
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 ADMIN_IDS = {int(x.strip()) for x in os.getenv("ADMIN_IDS", "0").split(",") if x.strip().isdigit()}
 STATE_FILE = "giveaway.json"
@@ -255,6 +258,63 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             s = _load()
         await query.edit_message_text("Admin Panel", reply_markup=admin_keyboard(s))
         return
+
+    if data.startswith("user:"):
+        async with LOCK:
+            s = _load()
+            if not s["active"]:
+                return await query.edit_message_text("No active giveaway right now.")
+            uid = user.id
+            if any(e["user_id"] == uid for e in s["entries"]):
+                idx = next(i for i,e in enumerate(s["entries"], start=1) if e["user_id"] == uid)
+                return await query.edit_message_text(f"You're already entered. Your number is #{idx}.")
+            entry = {"user_id": uid, "username": user.username or "", "first_name": user.first_name or "", "last_name": user.last_name or ""}
+            s["entries"].append(entry)
+            _save(s)
+            number = len(s["entries"])
+            print(f"[INFO] User entered giveaway: id={uid}, username={user.username}, entry number={number}")
+        await query.edit_message_text(f"You're in! Your entry number is #{number}. Good luck! 🎉")
+        return
+
+    if data.startswith("admin:"):
+        if not await is_admin(user.id, update, context):
+            return await query.edit_message_text("Unauthorized.")
+        cmd = data.split(":",1)[1]
+        print(f"[DEBUG] Admin button command: {cmd}")
+        async with LOCK:
+            s = _load()
+            # Delete Button flow
+            if cmd.startswith("delete_button:"):
+                try:
+                    idx = int(cmd.split(":")[1])
+                    custom_buttons = _load_custom_buttons()
+                    if 0 <= idx < len(custom_buttons):
+                        del custom_buttons[idx]
+                        _save_custom_buttons(custom_buttons)
+                        # Show updated button management UI
+                        menu_buttons = [
+                            [InlineKeyboardButton("Add New Button ➕", callback_data="admin:add_button")]
+                        ]
+                        for i, btn in enumerate(custom_buttons):
+                            menu_buttons.append([
+                                InlineKeyboardButton(f"Edit: {btn['name']}", callback_data=f"admin:edit_button:{i}"),
+                                InlineKeyboardButton(f"Delete 🗑", callback_data=f"admin:delete_button:{i}")
+                            ])
+                        if len(custom_buttons) > 1:
+                            menu_buttons.append([
+                                InlineKeyboardButton("Reorder Buttons 🔀", callback_data="admin:reorder_buttons")
+                            ])
+                        menu_buttons.append([
+                            InlineKeyboardButton("Back", callback_data="user:admin")
+                        ])
+                        await query.edit_message_text("Custom Button Management:", reply_markup=InlineKeyboardMarkup(menu_buttons))
+                        return
+                    else:
+                        await query.edit_message_text("Invalid button index.")
+                        return
+                except Exception as e:
+                    await query.edit_message_text(f"Error deleting button: {e}")
+                    return
 
     if data.startswith("user:"):
         async with LOCK:
