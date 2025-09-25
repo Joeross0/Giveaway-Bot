@@ -64,16 +64,16 @@ ANNOUNCE_SETTINGS_FILE = "announce_settings.json"
 
 def _load_announce_settings() -> dict:
     if not os.path.exists(ANNOUNCE_SETTINGS_FILE):
-        return {"interval": 10, "message": "A giveaway is active! DM this bot and use /start to enter."}
+        return {"interval": 15, "message": "A giveaway is active! DM this bot and use /start to enter."}
     try:
         with open(ANNOUNCE_SETTINGS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
             return {
-                "interval": int(data.get("interval", 10)),
+                "interval": int(data.get("interval", 15)),
                 "message": str(data.get("message", "A giveaway is active! DM this bot and use /start to enter."))
             }
     except:
-        return {"interval": 10, "message": "A giveaway is active! DM this bot and use /start to enter."}
+        return {"interval": 15, "message": "A giveaway is active! DM this bot and use /start to enter."}
 
 def _save_announce_settings(interval: int, message: str) -> None:
     with open(ANNOUNCE_SETTINGS_FILE, "w", encoding="utf-8") as f:
