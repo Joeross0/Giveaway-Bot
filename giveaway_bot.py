@@ -138,15 +138,27 @@ async def is_admin(user_id: int, update: Update, context: ContextTypes.DEFAULT_T
 def admin_keyboard(state: Dict[str, Any]) -> InlineKeyboardMarkup:
     active = state["active"]
     buttons = []
+    # End/Start Giveaway and Pick Random side by side
     if not active:
-        buttons.append([InlineKeyboardButton("Start Giveaway ✅", callback_data="admin:start")])
+        buttons.append([
+            InlineKeyboardButton("Start Giveaway ✅", callback_data="admin:start"),
+            InlineKeyboardButton("Pick Random 🎲", callback_data="admin:pick_random")
+        ])
     else:
-        buttons.append([InlineKeyboardButton("End Giveaway ⛔", callback_data="admin:end")])
-    buttons.append([InlineKeyboardButton("Pick Random 🎲", callback_data="admin:pick_random")])
-    buttons.append([InlineKeyboardButton("Show Entries 📋", callback_data="admin:show_entries")])
-    buttons.append([InlineKeyboardButton("Show Winners 🏆", callback_data="admin:show_winners")])
-    #buttons.append([InlineKeyboardButton("Clear Winners 🧹", callback_data="admin:clear_winners")])
-    buttons.append([InlineKeyboardButton("Set Announcement Interval ⏰", callback_data="admin:set_announce_interval")])
+        buttons.append([
+            InlineKeyboardButton("End Giveaway ⛔", callback_data="admin:end"),
+            InlineKeyboardButton("Pick Random 🎲", callback_data="admin:pick_random")
+        ])
+    # Show Entries and Show Winners side by side
+    buttons.append([
+        InlineKeyboardButton("Show Entries 📋", callback_data="admin:show_entries"),
+        InlineKeyboardButton("Show Winners 🏆", callback_data="admin:show_winners")
+    ])
+    # Set Announcement and Reset Announcements side by side
+    buttons.append([
+        InlineKeyboardButton("Set Announcement 📡", callback_data="admin:set_announce_interval"),
+        InlineKeyboardButton("Reset Announcements �", callback_data="admin:reset_announce")
+    ])
     return InlineKeyboardMarkup(buttons)
 
 async def user_keyboard(state: Dict[str, Any], update: Update, context: ContextTypes.DEFAULT_TYPE) -> InlineKeyboardMarkup:
@@ -259,10 +271,14 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                 return await query.edit_message_text("Giveaway started. Entries cleared.", reply_markup=admin_keyboard(s))
             if cmd == "end":
-                s["active"] = False
-                _save(s)
-                print("[INFO] Giveaway ended.")
-                return await query.edit_message_text("Giveaway ended.", reply_markup=admin_keyboard(s))
+                # Show confirmation keyboard
+                confirm_kb = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("Yes", callback_data="admin:confirm_end"),
+                        InlineKeyboardButton("No", callback_data="admin:cancel_end")
+                    ]
+                ])
+                return await query.edit_message_text("Are you sure you want to end the giveaway?", reply_markup=confirm_kb)
             if cmd == "pick_random":
                 if not s["entries"]:
                     return await query.edit_message_text("No entries to pick from.", reply_markup=admin_keyboard(s))
@@ -302,6 +318,28 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     await query.edit_message_text("Please DM the bot to set the announcement interval.", reply_markup=admin_keyboard(s))
                 return
+            if cmd == "reset_announce":
+                # Show confirmation keyboard
+                confirm_kb = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("Yes", callback_data="admin:confirm_reset_announce"),
+                        InlineKeyboardButton("No", callback_data="admin:cancel_reset_announce")
+                    ]
+                ])
+                return await query.edit_message_text("Are you sure you want to reset announcement settings?", reply_markup=confirm_kb)
+            if cmd == "confirm_end":
+                s["active"] = False
+                _save(s)
+                print("[INFO] Giveaway ended.")
+                return await query.edit_message_text("Giveaway ended.", reply_markup=admin_keyboard(s))
+            if cmd == "cancel_end":
+                return await query.edit_message_text("End giveaway cancelled.", reply_markup=admin_keyboard(s))
+            if cmd == "confirm_reset_announce":
+                _save_announce_settings(15, "A giveaway is active! DM this bot and use /start to enter.")
+                print("[INFO] Announcement settings reset to default.")
+                return await query.edit_message_text("Announcement settings reset to default.", reply_markup=admin_keyboard(s))
+            if cmd == "cancel_reset_announce":
+                return await query.edit_message_text("Reset announcement cancelled.", reply_markup=admin_keyboard(s))
     # Fallback
     print(f"[DEBUG] Unknown action for callback data: {data}")
     await query.edit_message_text("Unknown action.")
