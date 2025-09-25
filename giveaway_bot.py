@@ -52,6 +52,13 @@ async def set_announce_interval(update: Update, context: ContextTypes.DEFAULT_TY
         return await update.message.reply_text("Interval must be at least 1 minute.")
     _save_announce_interval(minutes)
     await update.message.reply_text(f"Announcement interval set to {minutes} minutes.")
+
+def _save_announce_interval(interval: int) -> None:
+    settings = _load_announce_settings()
+    message = settings.get("message", "A giveaway is active! DM this bot and use /start to enter.")
+    with open(ANNOUNCE_SETTINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump({"interval": interval, "message": message}, f)
+
 ANNOUNCE_SETTINGS_FILE = "announce_settings.json"
 
 
@@ -152,6 +159,7 @@ async def user_keyboard(state: Dict[str, Any], update: Update, context: ContextT
     return InlineKeyboardMarkup(buttons)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
     if chat and chat.type not in ["group", "supergroup"]:
         user = update.effective_user
         async with LOCK:
