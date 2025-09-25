@@ -315,6 +315,95 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception as e:
                     await query.edit_message_text(f"Error deleting button: {e}")
                     return
+            # Edit Button flow - Step 1: Select button to edit
+            if cmd.startswith("edit_button:"):
+                try:
+                    idx = int(cmd.split(":")[1])
+                    custom_buttons = _load_custom_buttons()
+                    if 0 <= idx < len(custom_buttons):
+                        btn = custom_buttons[idx]
+                        context.user_data["edit_button_idx"] = idx
+                        context.user_data["edit_button_name"] = btn["name"]
+                        context.user_data["edit_button_url"] = btn["url"]
+                        context.user_data["edit_button_side_by_side"] = btn.get("side_by_side", False)
+                        # Show edit options as buttons
+                        edit_kb = [
+                            [InlineKeyboardButton("Edit Name", callback_data="admin:edit_name")],
+                            [InlineKeyboardButton("Edit URL", callback_data="admin:edit_url")],
+                            [InlineKeyboardButton("Edit Side-by-Side", callback_data="admin:edit_side_by_side_menu")],
+                            [InlineKeyboardButton("Back", callback_data="admin:manage_buttons")]
+                        ]
+                        await query.edit_message_text(
+                            f"Editing Button #{idx+1}:\nCurrent name: {btn['name']}\nCurrent URL: {btn['url']}\nCurrent side-by-side: {'Yes' if btn.get('side_by_side') else 'No'}",
+                            reply_markup=InlineKeyboardMarkup(edit_kb)
+                        )
+                        return
+                    else:
+                        await query.edit_message_text("Invalid button index.")
+                        return
+                except Exception as e:
+                    await query.edit_message_text(f"Error editing button: {e}")
+                    return
+            # Edit Button flow - Step 2: Edit Name
+            if cmd == "edit_name":
+                context.user_data["edit_button_step"] = "name"
+                idx = context.user_data.get("edit_button_idx")
+                btn_name = context.user_data.get("edit_button_name", "")
+                await query.edit_message_text(
+                    f"Current name: {btn_name}\nSend the new name for this button:",
+                    reply_markup=None
+                )
+                return
+            # Edit Button flow - Step 3: Edit URL
+            if cmd == "edit_url":
+                context.user_data["edit_button_step"] = "url"
+                idx = context.user_data.get("edit_button_idx")
+                btn_url = context.user_data.get("edit_button_url", "")
+                await query.edit_message_text(
+                    f"Current URL: {btn_url}\nSend the new URL for this button:",
+                    reply_markup=None
+                )
+                return
+            # Edit Button flow - Step 4: Edit Side-by-Side menu
+            if cmd == "edit_side_by_side_menu":
+                context.user_data["edit_button_step"] = None
+                idx = context.user_data.get("edit_button_idx")
+                btn_side = context.user_data.get("edit_button_side_by_side", False)
+                kb = [
+                    [InlineKeyboardButton("Yes", callback_data="admin:edit_side_by_side_true")],
+                    [InlineKeyboardButton("No", callback_data="admin:edit_side_by_side_false")],
+                    [InlineKeyboardButton("Back", callback_data=f"admin:edit_button:{idx}")]
+                ]
+                await query.edit_message_text(
+                    f"Current side-by-side: {'Yes' if btn_side else 'No'}\nShould this button be side by side with the next one?",
+                    reply_markup=InlineKeyboardMarkup(kb)
+                )
+                return
+            # Edit Button flow - Step 5: Save Side-by-Side selection
+            if cmd == "edit_side_by_side_true" or cmd == "edit_side_by_side_false":
+                idx = context.user_data.get("edit_button_idx")
+                name = context.user_data.get("edit_button_name")
+                url = context.user_data.get("edit_button_url")
+                side_by_side = (cmd == "edit_side_by_side_true")
+                if idx is not None and name and url:
+                    custom_buttons = _load_custom_buttons()
+                    if 0 <= idx < len(custom_buttons):
+                        custom_buttons[idx] = {"name": name, "url": url, "side_by_side": side_by_side}
+                        _save_custom_buttons(custom_buttons)
+                        context.user_data["edit_button_side_by_side"] = side_by_side
+                        # Return to edit menu
+                        btn = custom_buttons[idx]
+                        edit_kb = [
+                            [InlineKeyboardButton("Edit Name", callback_data="admin:edit_name")],
+                            [InlineKeyboardButton("Edit URL", callback_data="admin:edit_url")],
+                            [InlineKeyboardButton("Edit Side-by-Side", callback_data="admin:edit_side_by_side_menu")],
+                            [InlineKeyboardButton("Back", callback_data="admin:manage_buttons")]
+                        ]
+                        await query.edit_message_text(
+                            f"Editing Button #{idx+1}:\nCurrent name: {btn['name']}\nCurrent URL: {btn['url']}\nCurrent side-by-side: {'Yes' if btn.get('side_by_side') else 'No'}",
+                            reply_markup=InlineKeyboardMarkup(edit_kb)
+                        )
+                        return
 
     if data.startswith("user:"):
         async with LOCK:
@@ -701,6 +790,60 @@ async def admin_panel_shortcuts(update: Update, context: ContextTypes.DEFAULT_TY
             ]]
             return await update.message.reply_text("Should this button be side by side with the next one or regular?", reply_markup=InlineKeyboardMarkup(kb))
         print(f"[DEBUG] Waiting for side_by_side selection via callback.")
+        return
+    # Edit Button flow
+    edit_step = context.user_data.get("edit_button_step")
+    if edit_step:
+        print(f"[DEBUG] Edit Button Flow Step: {edit_step}")
+        text = update.message.text.strip()
+        idx = context.user_data.get("edit_button_idx")
+        if edit_step == "name":
+            print(f"[DEBUG] Received new button name: {text}")
+            context.user_data["edit_button_name"] = text
+            # Save change immediately
+            custom_buttons = _load_custom_buttons()
+            if idx is not None and 0 <= idx < len(custom_buttons):
+                btn = custom_buttons[idx]
+                btn["name"] = text
+                _save_custom_buttons(custom_buttons)
+            context.user_data["edit_button_step"] = None
+            # Return to edit menu
+            btn = custom_buttons[idx] if idx is not None and 0 <= idx < len(custom_buttons) else None
+            edit_kb = [
+                [InlineKeyboardButton("Edit Name", callback_data="admin:edit_name")],
+                [InlineKeyboardButton("Edit URL", callback_data="admin:edit_url")],
+                [InlineKeyboardButton("Edit Side-by-Side", callback_data="admin:edit_side_by_side_menu")],
+                [InlineKeyboardButton("Back", callback_data="admin:manage_buttons")]
+            ]
+            await update.message.reply_text(
+                f"Editing Button #{idx+1}:\nCurrent name: {btn['name']}\nCurrent URL: {btn['url']}\nCurrent side-by-side: {'Yes' if btn.get('side_by_side') else 'No'}",
+                reply_markup=InlineKeyboardMarkup(edit_kb)
+            )
+            return
+        elif edit_step == "url":
+            print(f"[DEBUG] Received new button URL: {text}")
+            context.user_data["edit_button_url"] = text
+            # Save change immediately
+            custom_buttons = _load_custom_buttons()
+            if idx is not None and 0 <= idx < len(custom_buttons):
+                btn = custom_buttons[idx]
+                btn["url"] = text
+                _save_custom_buttons(custom_buttons)
+            context.user_data["edit_button_step"] = None
+            # Return to edit menu
+            btn = custom_buttons[idx] if idx is not None and 0 <= idx < len(custom_buttons) else None
+            edit_kb = [
+                [InlineKeyboardButton("Edit Name", callback_data="admin:edit_name")],
+                [InlineKeyboardButton("Edit URL", callback_data="admin:edit_url")],
+                [InlineKeyboardButton("Edit Side-by-Side", callback_data="admin:edit_side_by_side_menu")],
+                [InlineKeyboardButton("Back", callback_data="admin:manage_buttons")]
+            ]
+            await update.message.reply_text(
+                f"Editing Button #{idx+1}:\nCurrent name: {btn['name']}\nCurrent URL: {btn['url']}\nCurrent side-by-side: {'Yes' if btn.get('side_by_side') else 'No'}",
+                reply_markup=InlineKeyboardMarkup(edit_kb)
+            )
+            return
+        print(f"[DEBUG] Waiting for edit selection via callback.")
         return
 
     cmd = (update.message.text or "").strip().lower()
