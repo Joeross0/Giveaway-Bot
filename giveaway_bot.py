@@ -1,3 +1,17 @@
+CUSTOM_BUTTONS_FILE = "custom_buttons.json"
+
+def _load_custom_buttons() -> list:
+    if not os.path.exists(CUSTOM_BUTTONS_FILE):
+        return []
+    try:
+        with open(CUSTOM_BUTTONS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return []
+
+def _save_custom_buttons(buttons: list) -> None:
+    with open(CUSTOM_BUTTONS_FILE, "w", encoding="utf-8") as f:
+        json.dump(buttons, f, ensure_ascii=False, indent=2)
 # Move async def set_announce_interval below imports
 # giveaway_bot.py
 import asyncio, json, os, random
@@ -159,6 +173,10 @@ def admin_keyboard(state: Dict[str, Any]) -> InlineKeyboardMarkup:
         InlineKeyboardButton("Set Announcement 📡", callback_data="admin:set_announce_interval"),
         InlineKeyboardButton("Reset Announcements �", callback_data="admin:reset_announce")
     ])
+    # Add manage custom buttons button at the end
+    buttons.append([
+        InlineKeyboardButton("Manage Custom Buttons 📝", callback_data="admin:manage_buttons")
+    ])
     return InlineKeyboardMarkup(buttons)
 
 async def user_keyboard(state: Dict[str, Any], update: Update, context: ContextTypes.DEFAULT_TYPE) -> InlineKeyboardMarkup:
@@ -168,6 +186,22 @@ async def user_keyboard(state: Dict[str, Any], update: Update, context: ContextT
     user = update.effective_user
     if await is_admin(user.id, update, context):
         buttons.append([InlineKeyboardButton("🛠 Admin Panel", callback_data="user:admin")])
+    # Add custom buttons after default ones
+    custom_buttons = _load_custom_buttons()
+    i = 0
+    while i < len(custom_buttons):
+        btn = custom_buttons[i]
+        if btn.get("side_by_side") and i + 1 < len(custom_buttons) and custom_buttons[i+1].get("side_by_side"):
+            # Pair side-by-side buttons
+            btn2 = custom_buttons[i+1]
+            buttons.append([
+                InlineKeyboardButton(btn["name"], url=btn["url"]),
+                InlineKeyboardButton(btn2["name"], url=btn2["url"])
+            ])
+            i += 2
+        else:
+            buttons.append([InlineKeyboardButton(btn["name"], url=btn["url"])] )
+            i += 1
     return InlineKeyboardMarkup(buttons)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -202,6 +236,161 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    user = query.from_user
+    data = query.data or ""
+    await query.answer()
+
+    print(f"[DEBUG] Button pressed. Callback data: {data}")
+
+    if data == "noop":
+        return
+
+    if data == "user:help":
+        help_text = "Help: To become an admin, use /giveaway or /gstart in your group chat as a group admin. Then DM this bot to access admin features."
+        await query.edit_message_text(help_text)
+        return
+
+    if data == "user:admin":
+        async with LOCK:
+            s = _load()
+        await query.edit_message_text("Admin Panel", reply_markup=admin_keyboard(s))
+        return
+
+    if data.startswith("user:"):
+        async with LOCK:
+            s = _load()
+            if not s["active"]:
+                return await query.edit_message_text("No active giveaway right now.")
+            uid = user.id
+            if any(e["user_id"] == uid for e in s["entries"]):
+                idx = next(i for i,e in enumerate(s["entries"], start=1) if e["user_id"] == uid)
+                return await query.edit_message_text(f"You're already entered. Your number is #{idx}.")
+            entry = {"user_id": uid, "username": user.username or "", "first_name": user.first_name or "", "last_name": user.last_name or ""}
+            s["entries"].append(entry)
+            _save(s)
+            number = len(s["entries"])
+            print(f"[INFO] User entered giveaway: id={uid}, username={user.username}, entry number={number}")
+        await query.edit_message_text(f"You're in! Your entry number is #{number}. Good luck! 🎉")
+        return
+
+    if data.startswith("admin:"):
+        if not await is_admin(user.id, update, context):
+            return await query.edit_message_text("Unauthorized.")
+        cmd = data.split(":",1)[1]
+        print(f"[DEBUG] Admin button command: {cmd}")
+        async with LOCK:
+            s = _load()
+            # Handle Add New Button side_by_side selection
+            if cmd == "add_side_by_side" or cmd == "add_regular":
+                name = context.user_data.get("new_button_name")
+                url = context.user_data.get("new_button_url")
+                side_by_side = (cmd == "add_side_by_side")
+                if name and url:
+                    custom_buttons = _load_custom_buttons()
+                    custom_buttons.append({"name": name, "url": url, "side_by_side": side_by_side})
+                    _save_custom_buttons(custom_buttons)
+                    # Clear context
+                    context.user_data.pop("add_button_step", None)
+                    context.user_data.pop("new_button_name", None)
+                    context.user_data.pop("new_button_url", None)
+                    # Show updated button management UI
+                    menu_buttons = [
+                        [InlineKeyboardButton("Add New Button ➕", callback_data="admin:add_button")]
+                    ]
+                    for idx, btn in enumerate(custom_buttons):
+                        menu_buttons.append([
+                            InlineKeyboardButton(f"Edit: {btn['name']}", callback_data=f"admin:edit_button:{idx}"),
+                            InlineKeyboardButton(f"Delete 🗑", callback_data=f"admin:delete_button:{idx}")
+                        ])
+                    if len(custom_buttons) > 1:
+                        menu_buttons.append([
+                            InlineKeyboardButton("Reorder Buttons 🔀", callback_data="admin:reorder_buttons")
+                        ])
+                    menu_buttons.append([
+                        InlineKeyboardButton("Back", callback_data="user:admin")
+                    ])
+                    await query.edit_message_text("Custom Button Management:", reply_markup=InlineKeyboardMarkup(menu_buttons))
+                    return
+
+    if data.startswith("user:"):
+        async with LOCK:
+            s = _load()
+            if not s["active"]:
+                return await query.edit_message_text("No active giveaway right now.")
+            uid = user.id
+            if any(e["user_id"] == uid for e in s["entries"]):
+                idx = next(i for i,e in enumerate(s["entries"], start=1) if e["user_id"] == uid)
+                return await query.edit_message_text(f"You're already entered. Your number is #{idx}.")
+            entry = {"user_id": uid, "username": user.username or "", "first_name": user.first_name or "", "last_name": user.last_name or ""}
+            s["entries"].append(entry)
+            _save(s)
+            number = len(s["entries"])
+            print(f"[INFO] User entered giveaway: id={uid}, username={user.username}, entry number={number}")
+        await query.edit_message_text(f"You're in! Your entry number is #{number}. Good luck! 🎉")
+        return
+
+    if data.startswith("admin:"):
+        if not await is_admin(user.id, update, context):
+            return await query.edit_message_text("Unauthorized.")
+        cmd = data.split(":",1)[1]
+        print(f"[DEBUG] Admin button command: {cmd}")
+        async with LOCK:
+            s = _load()
+            # Add New Button flow
+            if cmd == "add_button":
+                from telegram import ForceReply
+                await query.edit_message_text(
+                    "Send the name for the new button:",
+                    reply_markup=None
+                )
+                # Set context for next message
+                context.user_data["add_button_step"] = "name"
+                return
+
+    if data.startswith("user:"):
+        async with LOCK:
+            s = _load()
+            if not s["active"]:
+                return await query.edit_message_text("No active giveaway right now.")
+            uid = user.id
+            if any(e["user_id"] == uid for e in s["entries"]):
+                idx = next(i for i,e in enumerate(s["entries"], start=1) if e["user_id"] == uid)
+                return await query.edit_message_text(f"You're already entered. Your number is #{idx}.")
+            entry = {"user_id": uid, "username": user.username or "", "first_name": user.first_name or "", "last_name": user.last_name or ""}
+            s["entries"].append(entry)
+            _save(s)
+            number = len(s["entries"])
+            print(f"[INFO] User entered giveaway: id={uid}, username={user.username}, entry number={number}")
+        await query.edit_message_text(f"You're in! Your entry number is #{number}. Good luck! 🎉")
+        return
+
+    if data.startswith("admin:"):
+        if not await is_admin(user.id, update, context):
+            return await query.edit_message_text("Unauthorized.")
+        cmd = data.split(":",1)[1]
+        print(f"[DEBUG] Admin button command: {cmd}")
+        async with LOCK:
+            s = _load()
+            if cmd == "manage_buttons":
+                custom_buttons = _load_custom_buttons()
+                menu_buttons = [
+                    [InlineKeyboardButton("Add New Button ➕", callback_data="admin:add_button")]
+                ]
+                # List existing buttons for edit/delete/reorder
+                for idx, btn in enumerate(custom_buttons):
+                    menu_buttons.append([
+                        InlineKeyboardButton(f"Edit: {btn['name']}", callback_data=f"admin:edit_button:{idx}"),
+                        InlineKeyboardButton(f"Delete 🗑", callback_data=f"admin:delete_button:{idx}")
+                    ])
+                if len(custom_buttons) > 1:
+                    menu_buttons.append([
+                        InlineKeyboardButton("Reorder Buttons 🔀", callback_data="admin:reorder_buttons")
+                    ])
+                menu_buttons.append([
+                    InlineKeyboardButton("Back", callback_data="user:admin")
+                ])
+                await query.edit_message_text("Custom Button Management:", reply_markup=InlineKeyboardMarkup(menu_buttons))
+                return
     user = query.from_user
     data = query.data or ""
     await query.answer()
@@ -431,6 +620,29 @@ async def admin_panel_shortcuts(update: Update, context: ContextTypes.DEFAULT_TY
     # Optional text commands for admins
     if not await is_admin(update.effective_user.id, update, context):
         return await update.message.reply_text("Unauthorized.")
+
+    # Add New Button flow
+    step = context.user_data.get("add_button_step")
+    if step:
+        print(f"[DEBUG] Add Button Flow Step: {step}")
+        text = update.message.text.strip()
+        if step == "name":
+            print(f"[DEBUG] Received button name: {text}")
+            context.user_data["new_button_name"] = text
+            context.user_data["add_button_step"] = "url"
+            return await update.message.reply_text("Send the URL for the new button:")
+        elif step == "url":
+            print(f"[DEBUG] Received button URL: {text}")
+            context.user_data["new_button_url"] = text
+            context.user_data["add_button_step"] = "side_by_side"
+            kb = [[
+                InlineKeyboardButton("Side by Side", callback_data="admin:add_side_by_side"),
+                InlineKeyboardButton("Regular", callback_data="admin:add_regular")
+            ]]
+            return await update.message.reply_text("Should this button be side by side with the next one or regular?", reply_markup=InlineKeyboardMarkup(kb))
+        print(f"[DEBUG] Waiting for side_by_side selection via callback.")
+        return
+
     cmd = (update.message.text or "").strip().lower()
     if cmd == "/gshow_entries":
         return await show_entries(update, context)
@@ -465,7 +677,16 @@ def main():
     app.add_handler(CommandHandler("giveaway", group_giveaway_entry))
     app.add_handler(CommandHandler("gset_announce_interval", set_announce_interval))
     app.add_handler(CallbackQueryHandler(handle_button))
-    app.add_handler(MessageHandler(filters.TEXT & filters.User(ADMIN_IDS), admin_panel_shortcuts))
+    # Always process admin_panel_shortcuts if add_button_step is set, or if user is in ADMIN_IDS
+    def admin_message_filter(message):
+        # Always allow if add_button_step is set
+        user_data = app.context.user_data.get(message.from_user.id, {}) if hasattr(app.context, 'user_data') else {}
+        if user_data.get('add_button_step'):
+            return True
+        # Otherwise, check admin
+        return message.from_user.id in ADMIN_IDS
+
+    app.add_handler(MessageHandler(filters.TEXT, admin_panel_shortcuts))
 
     # Regular announcements
     async def announce_giveaway_periodically(app):
